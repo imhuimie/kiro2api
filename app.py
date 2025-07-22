@@ -7,7 +7,7 @@ import re
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -33,9 +33,29 @@ CODEWHISPERER_MODEL = "CLAUDE_SONNET_4_20250514_V1_0"
 
 
 # Pydantic models
+class ContentPart(BaseModel):
+    type: str = "text"
+    text: str
+
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: Union[str, List[ContentPart]]
+    
+    def get_content_text(self) -> str:
+        """Extract text content from either string or content parts"""
+        if isinstance(self.content, str):
+            return self.content
+        elif isinstance(self.content, list):
+            # Join all text parts
+            text_parts = []
+            for part in self.content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text" and "text" in part:
+                        text_parts.append(part["text"])
+                elif hasattr(part, 'text'):
+                    text_parts.append(part.text)
+            return "".join(text_parts)
+        return str(self.content)
 
 class ChatCompletionRequest(BaseModel):
     model: str
@@ -101,7 +121,7 @@ def build_codewhisperer_request(messages: List[ChatMessage]):
     
     for msg in messages:
         if msg.role == "system":
-            system_prompt = msg.content
+            system_prompt = msg.get_content_text()
         else:
             user_messages.append(msg)
     
@@ -114,21 +134,21 @@ def build_codewhisperer_request(messages: List[ChatMessage]):
         if i + 1 < len(user_messages):
             history.append({
                 "userInputMessage": {
-                    "content": user_messages[i].content,
+                    "content": user_messages[i].get_content_text(),
                     "modelId": CODEWHISPERER_MODEL,
                     "origin": "AI_EDITOR"
                 }
             })
             history.append({
                 "assistantResponseMessage": {
-                    "content": user_messages[i + 1].content,
+                    "content": user_messages[i + 1].get_content_text(),
                     "toolUses": []
                 }
             })
     
     # Build current message
     current_message = user_messages[-1]
-    content = current_message.content
+    content = current_message.get_content_text()
     if system_prompt:
         content = f"{system_prompt}\n\n{content}"
     
