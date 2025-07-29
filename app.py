@@ -8,6 +8,8 @@ import asyncio
 import xml.etree.ElementTree as ET
 import logging
 import struct
+import base64
+import copy
 from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -16,7 +18,7 @@ from dotenv import load_dotenv
 from json_repair import repair_json
 
 # Configure logging
-# logging.basicConfig(level=logging.INFO) // for dev
+# logging.basicConfig(level=logging.INFO) # for dev
 logging.basicConfig(level=logging.WARNING) 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +47,14 @@ MODEL_MAP = {
 DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
 # Pydantic models for OpenAI compatibility
+class ImageUrl(BaseModel):
+    url: str
+    detail: Optional[str] = "auto"
+
 class ContentPart(BaseModel):
-    type: str = "text"
-    text: str
+    type: str
+    text: Optional[str] = None
+    image_url: Optional[ImageUrl] = None
 
 class ToolCall(BaseModel):
     id: str
@@ -76,7 +83,7 @@ class ChatMessage(BaseModel):
                         text_parts.append(part.get("text", ""))
                     elif part.get("type") == "tool_result" and "content" in part:
                         text_parts.append(part.get("content", ""))
-                elif hasattr(part, 'text'):
+                elif hasattr(part, 'text') and part.text:
                     text_parts.append(part.text)
             return "".join(text_parts)
         else:
@@ -735,6 +742,49 @@ def build_codewhisperer_request(request: ChatCompletionRequest):
     
     # Build current message
     current_message = conversation_messages[-1]
+
+    # Handle images in the last message
+    images = []
+    if isinstance(current_message.content, list):
+        for part in current_message.content:
+            if part.type == "image_url" and part.image_url:
+                try:
+                    # 记录原始 URL 的前 50 个字符，用于调试
+                    logger.info(f"🔍 处理图片 URL: {part.image_url.url[:50]}...")
+                    
+                    # 检查 URL 格式是否正确
+                    if not part.image_url.url.startswith("data:image/"):
+                        logger.error(f"❌ 图片 URL 格式不正确，应该以 'data:image/' 开头")
+                        continue
+                    
+                    # Correctly parse the data URI
+                    # format: data:image/jpeg;base64,{base64_string}
+                    header, encoded_data = part.image_url.url.split(",", 1)
+                    
+                    # Correctly parse the image format from the mime type
+                    # "data:image/jpeg;base64" -> "jpeg"
+                    # Use regex to reliably extract image format, e.g., "jpeg" from "data:image/jpeg;base64"
+                    match = re.search(r'image/(\w+)', header)
+                    if match:
+                        image_format = match.group(1)
+                        # 验证 Base64 编码是否有效
+                        try:
+                            base64.b64decode(encoded_data)
+                            logger.info("✅ Base64 编码验证通过")
+                        except Exception as e:
+                            logger.error(f"❌ Base64 编码无效: {e}")
+                            continue
+                            
+                        images.append({
+                            "format": image_format,
+                            "source": {"bytes": encoded_data}
+                        })
+                        logger.info(f"🖼️ 成功处理图片，格式: {image_format}, 大小: {len(encoded_data)} 字符")
+                    else:
+                        logger.warning(f"⚠️ 无法从头部确定图片格式: {header}")
+                except Exception as e:
+                    logger.error(f"❌ 处理图片 URL 失败: {str(e)}")
+
     current_content = current_message.get_content_text()
     
     # Handle different roles for current message
@@ -790,22 +840,43 @@ def build_codewhisperer_request(request: ChatCompletionRequest):
         }
     }
     
-    # Add tools context only to current message if provided
+    # Add context for tools
+    user_input_message_context = {}
     if request.tools:
-        tools_context = {
-            "tools": [
-                {
-                    "toolSpecification": {
-                        "name": tool.function.name,
-                        "description": tool.function.description or "",
-                        "inputSchema": {"json": tool.function.parameters or {}}
-                    }
-                } for tool in request.tools
-            ]
-        }
-        codewhisperer_request["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"] = tools_context
+        user_input_message_context["tools"] = [
+            {
+                "toolSpecification": {
+                    "name": tool.function.name,
+                    "description": tool.function.description or "",
+                    "inputSchema": {"json": tool.function.parameters or {}}
+                }
+            } for tool in request.tools
+        ]
     
-    logger.info(f"🔄 COMPLETE CODEWHISPERER REQUEST: {json.dumps(codewhisperer_request, indent=2)}")
+    # 根据文档，images 应该是 userInputMessage 的直接子字段，而不是在 userInputMessageContext 中
+    if images:
+        # 直接添加到 userInputMessage 中
+        codewhisperer_request["conversationState"]["currentMessage"]["userInputMessage"]["images"] = images
+        logger.info(f"📊 添加了 {len(images)} 个图片到 userInputMessage 中")
+        for i, img in enumerate(images):
+            logger.info(f"  - 图片 {i+1}: 格式={img['format']}, 大小={len(img['source']['bytes'])} 字符")
+            # 记录图片数据的前20个字符，用于调试
+            logger.info(f"  - 图片数据前20字符: {img['source']['bytes'][:20]}...")
+        logger.info(f"✅ 成功添加 images 到 userInputMessage 中")
+
+    if user_input_message_context:
+        codewhisperer_request["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"] = user_input_message_context
+        logger.info(f"✅ 成功添加 userInputMessageContext 到请求中")
+    
+    # 创建一个用于日志记录的请求副本，避免记录完整的图片数据
+    log_request = copy.deepcopy(codewhisperer_request)
+    # 检查 images 是否在 userInputMessage 中
+    if "images" in log_request.get("conversationState", {}).get("currentMessage", {}).get("userInputMessage", {}):
+        for img in log_request["conversationState"]["currentMessage"]["userInputMessage"]["images"]:
+            if "bytes" in img.get("source", {}):
+                img["source"]["bytes"] = img["source"]["bytes"][:20] + "..." # 只记录前20个字符
+    
+    logger.info(f"🔄 COMPLETE CODEWHISPERER REQUEST: {json.dumps(log_request, indent=2)}")
     return codewhisperer_request
 # AWS Event Stream Parser (from version 2)
 class CodeWhispererStreamParser:
@@ -965,7 +1036,7 @@ async def call_kiro_api(request: ChatCompletionRequest):
         "Content-Type": "application/json",
         "Accept": "text/event-stream" if request.stream else "application/json"
     }
-    
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -1321,7 +1392,7 @@ async def create_non_streaming_response(request: ChatCompletionRequest):
         # 关键修复：检查原始响应中的 bracket 格式工具调用
         logger.info("🔍 开始检查原始响应中的bracket格式工具调用...")
         raw_bracket_tool_calls = parse_bracket_tool_calls(raw_response_text)
-        if raw_bracket_tool_calls:
+        if raw_bracket_tool_calls and isinstance(raw_bracket_tool_calls, list):
             logger.info(f"✅ 在原始响应中发现 {len(raw_bracket_tool_calls)} 个 bracket 格式工具调用")
             tool_calls.extend(raw_bracket_tool_calls)
         else:
