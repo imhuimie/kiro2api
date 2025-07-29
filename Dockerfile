@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Copy requirements file
+COPY requirements.txt .
+
 # Configure pip and install Python dependencies
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
     pip install --no-cache-dir --user -r requirements.txt
