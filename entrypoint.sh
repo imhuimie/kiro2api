@@ -34,6 +34,10 @@ if [ -z "$KIRO_ACCESS_TOKEN" ] || [ -z "$KIRO_REFRESH_TOKEN" ]; then
         echo "❌ 未找到token配置，服务可能无法正常工作"
         echo "请设置 KIRO_ACCESS_TOKEN 和 KIRO_REFRESH_TOKEN 环境变量"
     fi
+else
+    echo "✅ 环境变量已设置"
+    echo "KIRO_ACCESS_TOKEN: ${KIRO_ACCESS_TOKEN:0:20}..."
+    echo "KIRO_REFRESH_TOKEN: ${KIRO_REFRESH_TOKEN:0:20}..."
 fi
 
 # 启动应用

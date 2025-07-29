@@ -22,8 +22,9 @@ from json_repair import repair_json
 logging.basicConfig(level=logging.WARNING) 
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (only if not already set)
+if not os.getenv("KIRO_ACCESS_TOKEN") or not os.getenv("KIRO_REFRESH_TOKEN"):
+    load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
