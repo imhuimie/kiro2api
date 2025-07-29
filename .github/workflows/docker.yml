@@ -36,6 +36,8 @@ jobs:
           type=ref,event=pr
           type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
+        flavor: |
+          latest=auto
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
@@ -43,6 +45,7 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        platforms: linux/amd64,linux/arm64
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
