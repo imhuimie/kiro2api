@@ -1,27 +1,46 @@
+# Build stage
+FROM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Configure pip and install Python dependencies
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip install --no-cache-dir --user -r requirements.txt
+
+# Final stage
 FROM python:3.11-slim
 
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Copy Python packages from builder stage
+COPY --from=builder /root/.local /home/appuser/.local
 
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
-
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
+# Copy application files
 COPY app.py token_reader.py entrypoint.sh ./
 
-# Make entrypoint executable
-RUN chmod +x entrypoint.sh
+# Create necessary directories
+RUN mkdir -p /home/appuser/.aws/sso/cache && \
+    chmod +x entrypoint.sh && \
+    chown -R appuser:appuser /app /home/appuser
 
-# Create .aws directory structure
-RUN mkdir -p /root/.aws/sso/cache
+# Switch to non-root user
+USER appuser
+
+# Set environment variables
+ENV HOME=/home/appuser
+ENV PATH=/home/appuser/.local/bin:$PATH
 
 # Expose port
 EXPOSE 8989

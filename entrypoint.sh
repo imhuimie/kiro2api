@@ -6,7 +6,7 @@
 echo "🚀 Ki2API 启动中..."
 
 # 检查是否存在token文件
-TOKEN_FILE="/root/.aws/sso/cache/kiro-auth-token.json"
+TOKEN_FILE="$HOME/.aws/sso/cache/kiro-auth-token.json"
 
 if [ -f "$TOKEN_FILE" ]; then
     echo "📁 发现token文件，正在读取..."
